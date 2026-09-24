@@ -1,0 +1,19 @@
+# Build trees
+build/
+build-*/
+out/
+_install/
+install/
+cmake-build-*/
+
+# Editor / tooling
+.vs/
+.vscode/
+.idea/
+*.user
+
+# Local runtime artifacts
+*.log
+*.trxr
+*.trxr.tmp
+*.snapshot
