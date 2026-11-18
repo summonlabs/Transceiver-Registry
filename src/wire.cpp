@@ -1169,7 +1169,23 @@ Status Server::run() {
       }
     }
     std::unique_lock<std::mutex> lock(worker_mutex_);
-    workers_.emplace_back([this, connection]() { serve_connection(connection); });
+    // Finished connection threads are joined as soon as they have returned.
+    // Every one was kept, with its handle, until stop(), so a long-running
+    // server grew by one thread object per connection it had ever served.
+    for (auto it = workers_.begin(); it != workers_.end();) {
+      if (it->finished->load()) {
+        it->thread.join();
+        it = workers_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([this, connection, finished]() {
+      serve_connection(connection);
+      finished->store(true);
+    });
+    workers_.push_back(Worker{std::move(worker), std::move(finished)});
   }
   running_.store(false);
   return ok_status();
@@ -1218,14 +1234,14 @@ Status Server::stop() {
   for (const std::shared_ptr<Connection>& connection : connections) {
     connection->close();
   }
-  std::vector<std::thread> workers;
+  std::vector<Worker> workers;
   {
     std::unique_lock<std::mutex> lock(worker_mutex_);
     workers.swap(workers_);
   }
-  for (std::thread& worker : workers) {
-    if (worker.joinable()) {
-      worker.join();
+  for (Worker& worker : workers) {
+    if (worker.thread.joinable()) {
+      worker.thread.join();
     }
   }
   running_.store(false);

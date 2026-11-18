@@ -597,9 +597,25 @@ Status write_file_atomically(const std::string& path, const std::vector<std::byt
   }
 
 #if defined(_WIN32)
-  if (::MoveFileExA(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
-    std::remove(temporary.c_str());
-    return Status(StatusCode::IoError, "atomic rename of the snapshot failed");
+  // While a reader has the snapshot open (an inspection, an antivirus or
+  // indexing scan) the replace fails until the reader closes the file, so it is
+  // retried for a bounded time (about 2 s). A directory in the way is not
+  // transient and fails at once.
+  for (int attempt = 0;; ++attempt) {
+    if (::MoveFileExA(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+      break;
+    }
+    const DWORD error = ::GetLastError();
+    const DWORD attributes = ::GetFileAttributesA(path.c_str());
+    const bool directory = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    const bool transient =
+        (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION) &&
+        !directory;
+    if (!transient || attempt >= 100) {
+      std::remove(temporary.c_str());
+      return Status(StatusCode::IoError, "atomic rename of the snapshot failed");
+    }
+    ::Sleep(20);
   }
 #else
   if (std::rename(temporary.c_str(), path.c_str()) != 0) {

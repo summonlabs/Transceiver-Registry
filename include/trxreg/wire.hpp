@@ -164,6 +164,12 @@ class Server {
 
  private:
   struct Connection;
+  /// A connection's thread and the flag it sets as its last step, so that
+  /// finished threads are joined while the server runs.
+  struct Worker {
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> finished;
+  };
   void serve_connection(std::shared_ptr<Connection> connection);
 
   Registry& registry_;
@@ -174,7 +180,7 @@ class Server {
   std::atomic<bool> running_{false};
   mutable std::mutex connections_mutex_;
   std::vector<std::shared_ptr<Connection>> connections_;
-  std::vector<std::thread> workers_;
+  std::vector<Worker> workers_;
   std::mutex worker_mutex_;
 };
 

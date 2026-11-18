@@ -15,11 +15,13 @@
 
 #include "trxreg/version.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -367,6 +369,35 @@ TRXREG_TEST(persistence_autosave_tracks_committed_mutations) {
   REQUIRE_OK(loaded);
   CHECK_EQ(loaded.value().modules, std::uint64_t{2});
   CHECK_EQ(loaded.value().sources, std::uint64_t{1});
+}
+
+TRXREG_TEST(persistence_autosave_waits_for_a_reader_of_the_snapshot) {
+  const std::filesystem::path path = artifact("autosave-reader.trxr");
+  const auto clock = make_test_clock(kBaseWallNs, ClockDomainId{71});
+  Registry registry({}, clock);
+  REQUIRE_OK(registry.enable_autosave(path.string()));
+  const SourceHandle source = register_source(registry, "reader-agent");
+  bool reader_opened = false;
+  {
+    // An inspection of the store holds the snapshot open while the next
+    // mutation's autosave replaces it, and closes it shortly after.
+    std::ifstream reader(path, std::ios::binary);
+    reader_opened = reader.is_open();
+    std::thread mutator([&registry, &source] {
+      const ModuleHandle module = register_module(registry, source.authority(), "chassis0/bay9");
+      (void)module;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    reader.close();
+    mutator.join();
+  }
+  registry.disable_autosave();
+  CHECK(reader_opened);
+  // The autosave waits for the reader instead of failing unreported and
+  // leaving the acknowledged registration out of the snapshot.
+  const Result<LoadReport> loaded = inspect_snapshot(path.string());
+  REQUIRE_OK(loaded);
+  CHECK_EQ(loaded.value().modules, std::uint64_t{1});
 }
 
 // Serialization is canonical: the same logical state produces the same digest,

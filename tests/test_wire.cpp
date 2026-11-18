@@ -41,6 +41,16 @@
 #include "trxreg/version.hpp"
 #include "trxreg/wire.hpp"
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace {
 
 using trxreg::CanonicalLimits;
@@ -1016,6 +1026,43 @@ TRXREG_TEST(wire_server_bounds_requests_per_connection) {
   CHECK(harness.running());
   REQUIRE_OK(harness.stop());
   CHECK(harness.run_status().ok());
+}
+
+TRXREG_TEST(wire_finished_connection_threads_are_released) {
+#if defined(_WIN32)
+  trxreg::Registry registry;
+  trxreg::wire::ServerOptions options;
+  options.port = 0;
+  options.bind_address = "127.0.0.1";
+  ServerHarness harness(registry, options);
+  REQUIRE_OK(harness.start());
+  const std::uint16_t port = harness.port();
+  const auto request = [port]() {
+    Result<trxreg::wire::Client> client = trxreg::wire::Client::connect("127.0.0.1", port);
+    if (!client.ok()) {
+      return false;
+    }
+    const bool answered = client.value().call("registry.generation", Value::object({})).ok();
+    return client.value().close().ok() && answered;
+  };
+  const bool warmed = request();
+  DWORD before = 0;
+  ::GetProcessHandleCount(::GetCurrentProcess(), &before);
+  int served = 0;
+  for (int index = 0; index < 100; ++index) {
+    if (request()) {
+      ++served;
+    }
+  }
+  DWORD after = 0;
+  ::GetProcessHandleCount(::GetCurrentProcess(), &after);
+  REQUIRE_OK(harness.stop());
+  CHECK(warmed);
+  CHECK_EQ(served, 100);
+  // A finished connection thread that is never joined keeps its handle, so the
+  // count grew by about one per connection until stop().
+  CHECK(after < before + 64);
+#endif
 }
 
 }  // namespace
